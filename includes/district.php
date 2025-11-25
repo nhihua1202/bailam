@@ -1,0 +1,32 @@
+<?php
+$districts = [
+  "Ba Đình",
+  "Hoàn Kiếm",
+  "Đống Đa",
+  "Hai Bà Trưng",
+  "Cầu Giấy",
+  "Thanh Xuân",
+  "Hoàng Mai",
+  "Long Biên",
+  "Tây Hồ",
+  "Hà Đông",
+  "Bắc Từ Liêm",
+  "Nam Từ Liêm",
+  "Đông Anh",
+  "Sóc Sơn",
+  "Gia Lâm",
+  "Thanh Trì",
+  "Hoài Đức",
+  "Đan Phượng",
+  "Thường Tín",
+  "Phú Xuyên",
+  "Mê Linh",
+  "Chương Mỹ",
+  "Ứng Hòa",
+  "Mỹ Đức",
+  "Phúc Thọ",
+  "Ba Vì",
+  "Thạch Thất",
+  "Quốc Oai"
+];
+?>

@@ -1,0 +1,1 @@
+<?php $id=$_GET['id']??null; $f=__DIR__.'/data/listings.json'; if($id && file_exists($f)){ $list=json_decode(file_get_contents($f),true); $list=array_filter($list,function($l) use($id){ return $l['id'] != $id; }); file_put_contents($f,json_encode(array_values($list),JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE)); } header('Location:/manage.php'); ?>
