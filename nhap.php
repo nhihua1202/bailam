@@ -245,23 +245,6 @@ body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Arial,Helvetica,sans-ser
 .footer-gap{height:36px}
 .notice{padding:14px;border:1px solid #f1f3f5;border-radius:12px;background:#fff;color:var(--muted);text-align:center}
 .toggle-btn{display:inline-block;padding:8px 10px;border-radius:10px;background:#fff;border:1px solid var(--border);font-weight:600;cursor:pointer}
-.tab-bar{display:flex;gap:10px;margin-bottom:16px}
-.tab-btn{
-  padding:10px 14px;
-  border-radius:10px;
-  border:1px solid var(--border);
-  background:#fff;
-  font-weight:700;
-  cursor:pointer;
-}
-.tab-btn.active{
-  background:var(--accent);
-  color:#fff;
-  border-color:var(--accent);
-}
-.tab-content{display:none}
-.tab-content.active{display:block}
-
 </style>
 </head>
 <body>
@@ -277,14 +260,6 @@ body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Arial,Helvetica,sans-ser
     <div class="stat"><div class="label">Đang thuê</div><div class="value"><?= (int)$rented ?></div></div>
     <div class="stat"><div class="label">Phòng trống</div><div class="value"><?= max(0, $total_rooms - $rented) ?></div></div>
   </div>
-<div class="tab-bar">
-  <button class="tab-btn active" data-tab="rented">
-    🟢 Đang thuê (<?= (int)$rented ?>)
-  </button>
-  <button class="tab-btn" data-tab="available">
-    🔵 Phòng trống (<?= max(0,$total_rooms-$rented) ?>)
-  </button>
-</div>
 
   <?php if (empty($posts)): ?>
     <div class="notice">
@@ -295,13 +270,8 @@ body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Arial,Helvetica,sans-ser
       <?php endif; ?>
     </div>
   <?php else: ?>
-  <div class="tab-content active tab-rented">
-  <div class="list">
+    <div class="list" aria-live="polite">
       <?php foreach ($posts as $p):
-
-  // ❗ CHỈ LẤY PHÒNG ĐANG THUÊ
-  if ((int)($p['status_rent'] ?? 0) !== 1) continue;
-
         $postId = (int)$p['id'];
         $thumbVal = $p['thumbnail'] ?? ($p['image'] ?? ($p['image_path'] ?? ''));
         $thumb = resolve_thumb_url($thumbVal);
@@ -432,65 +402,6 @@ body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Arial,Helvetica,sans-ser
         </div>
       </div>
       <?php endforeach; ?>
-        </div>
-</div>
-
-<div class="tab-content tab-available">
-  <div class="list">
-<?php foreach ($posts as $p):
-
-    // ✅ CHỈ LẤY PHÒNG TRỐNG
-    if ((int)($p['status_rent'] ?? 0) === 1) continue;
-
-    $postId = (int)$p['id'];
-    $thumbVal = $p['thumbnail'] ?? ($p['image'] ?? ($p['image_path'] ?? ''));
-    $thumb = resolve_thumb_url($thumbVal);
-
-    $is_rented = false;
-
-    $reqs_pending = $requests_by_post[$postId]['pending'] ?? [];
-    $reqs_approved = $requests_by_post[$postId]['approved'] ?? [];
-    $reqs_all = $requests_by_post[$postId]['all'] ?? [];
-?>
-<div class="room" id="room-row-<?= $postId ?>">
-  <div>
-    <img src="<?= e($thumb) ?>" class="thumb" onerror="this.src='assets/default.png'">
-  </div>
-
-  <div>
-    <a href="post_detail.php?id=<?= $postId ?>" class="title" style="text-decoration:none">
-      <?= e($p['title'] ?? '—') ?>
-    </a>
-    <div class="meta"><?= e($p['khu_vuc'] ?? '') ?> • <?= e(date('d/m/Y', strtotime($p['created_at'] ?? 'now'))) ?></div>
-
-    <div class="small" style="margin-top:8px">
-      <?php if (!empty($reqs_pending)): ?>
-        <span style="color:var(--accent);font-weight:700"><?= count($reqs_pending) ?> yêu cầu chờ</span>
-      <?php else: ?>
-        <span class="small">Chưa có yêu cầu</span>
-      <?php endif; ?>
-    </div>
-  </div>
-
-  <div class="col-price">
-    <div class="price"><?= e(fmt_price_million($p['price'] ?? '')) ?></div>
-    <div class="price-label">Giá</div>
-  </div>
-
-  <div class="col-actions">
-    <span class="badge badge-available">Phòng trống</span>
-    <div style="margin-top:8px;display:flex;gap:8px;flex-direction:column;align-items:flex-end">
-      <div style="display:flex;gap:8px">
-        <a href="edit_post.php?id=<?= $postId ?>" class="link">Sửa</a>
-        <a href="delete_post.php?id=<?= $postId ?>" onclick="return confirm('Xóa phòng này?')" class="link link-muted">Xóa</a>
-      </div>
-      <button class="toggle-btn" data-toggle="req-<?= $postId ?>">Xem yêu cầu</button>
-    </div>
-  </div>
-</div>
-<?php endforeach; ?>
-  </div>
-</div>
     </div>
   <?php endif; ?>
 
@@ -523,17 +434,6 @@ document.addEventListener('click', function(e){
     box.style.display = 'block';
     box.setAttribute('aria-hidden', 'false');
     setTimeout(function(){ box.scrollIntoView({behavior:'smooth', block:'center'}); }, 120);
-  }
-});
-</script>
-<script>
-document.querySelectorAll('.tab-btn').forEach(btn=>{
-  btn.onclick = ()=>{
-    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
-
-    btn.classList.add('active');
-    document.querySelector('.tab-'+btn.dataset.tab).classList.add('active');
   }
 });
 </script>
