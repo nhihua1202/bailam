@@ -1,541 +1,223 @@
 <?php
 // manage_rooms.php
-// Full file - copy & paste vào project của bạn.
-// Requirements:
-// - header.php: phải start session và đặt $_SESSION['user']
-// - db.php: phải tạo PDO $pdo
-// - Thư mục uploads/ chứa hình (hoặc DB lưu full URL)
-// - assets/default.png: ảnh mặc định
-
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-require 'header.php'; // phải khởi session, user info
-require 'db.php';     // phải khai $pdo
+require 'header.php'; 
+require 'db.php';     
 
-// --- quyền: chỉ landlord được xem (thay đổi theo hệ thống bạn) ---
-if (empty($_SESSION['user']['id'])) {
-    header("Location: auth.php?mode=login");
+// 1. Kiểm tra quyền Landlord
+if (empty($_SESSION['user']['id']) || ($_SESSION['user']['role'] ?? '') !== 'landlord') {
+    echo '<p style="padding:20px; color:red; text-align:center;">Bạn không có quyền truy cập.</p>';
     exit;
 }
-$u = $_SESSION['user'];
-if (($u['role'] ?? '') !== 'landlord') {
-    echo '<main style="max-width:900px;margin:40px auto;padding:20px;font-family:system-ui,Arial,Helvetica,sans-serif;">\n            <p style="color:#c53030;font-weight:600;">Bạn không có quyền truy cập.</p>\n          </main>';
-    exit;
-}
-$landlord_id = (int)$u['id'];
+$landlord_id = (int)$_SESSION['user']['id'];
 
-/* -------------------- helpers -------------------- */
+/* -------------------- Helpers -------------------- */
 if (!function_exists('e')) {
     function e($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 }
 
-/**
- * Resolve thumbnail DB value to web URL.
- * - full URL -> keep
- * - starting with / -> keep
- * - file in uploads/ -> map to web path relative to DOCUMENT_ROOT
- * - else -> assets/default.png
- */
 function resolve_thumb_url($thumbVal) {
     $thumbVal = trim((string)$thumbVal);
-    if ($thumbVal === '') return 'assets/default.png';
+    $default = 'assets/default.png';
+    if ($thumbVal === '') return $default;
     if (preg_match('#^https?://#i', $thumbVal)) return $thumbVal;
-    if (strpos($thumbVal, '/') === 0) return $thumbVal;
+    $paths = ['uploads/'.ltrim($thumbVal, '/'), ltrim($thumbVal, '/'), '../uploads/'.ltrim($thumbVal, '/')];
+    foreach ($paths as $path) { if (file_exists($path)) return $path; }
+    return $default;
+}
 
-    // local uploads (filename only)
-    $local = __DIR__ . '/uploads/' . ltrim($thumbVal, '/');
-    if (is_file($local)) {
-        // ensure leading slash for web path
-        return '/uploads/' . ltrim($thumbVal, '/');
+function fmt_price_million($raw) {
+    if ($raw === null || $raw === '') return 'Thỏa thuận';
+    $clean = str_replace([',','VNĐ','vnd','đ'], '', (string)$raw);
+    if (is_numeric($clean)) {
+        $num = (float)$clean;
+        $million = ($num > 1000) ? $num / 1000000.0 : $num;
+        return rtrim(rtrim(number_format($million, 1, '.', ''), '0'), '.') . ' triệu';
     }
-
-    // maybe already contains uploads/... relative path
-    if (strpos($thumbVal, 'uploads/') === 0) {
-        $path = '/' . ltrim($thumbVal, '/');
-        if (is_file($_SERVER['DOCUMENT_ROOT'] . $path)) return $path;
-        return $path; // still return it, may be served by web
-    }
-
-    // fallback
-    return 'assets/default.png';
+    return $raw;
 }
 
-function table_exists(PDO $pdo, $table) {
-    try {
-        $st = $pdo->prepare("SHOW TABLES LIKE ?");
-        $st->execute([$table]);
-        return (bool)$st->fetchColumn();
-    } catch (Exception $ex) { return false; }
-}
+/* -------------------- Data Fetching -------------------- */
+$sql = "SELECT p.*, (SELECT filename FROM post_images WHERE post_id = p.id ORDER BY id ASC LIMIT 1) AS thumbnail
+        FROM posts p WHERE p.user_id = ? ORDER BY p.created_at DESC";
+$st = $pdo->prepare($sql);
+$st->execute([$landlord_id]);
+$posts = $st->fetchAll(PDO::FETCH_ASSOC);
 
-/* -------------------- Detect requests table -------------------- */
-$requests_table = null;
-if (table_exists($pdo, 'rental_requests')) $requests_table = 'rental_requests';
-elseif (table_exists($pdo, 'rent_requests')) $requests_table = 'rent_requests';
-
-/* -------------------- Stats -------------------- */
-try {
-    $st = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE user_id = ?");
-    $st->execute([$landlord_id]);
-    $total_rooms = (int)$st->fetchColumn();
-} catch (Exception $ex) { $total_rooms = 0; }
-
-$pending = 0;
-if ($requests_table) {
-    try {
-        $st = $pdo->prepare("\n            SELECT COUNT(*) FROM {$requests_table} rr\n            JOIN posts p ON rr.post_id = p.id\n            WHERE p.user_id = ? AND (LOWER(rr.status) IN ('pending','waiting','new') OR rr.status IN ('0'))\n        ");
-        $st->execute([$landlord_id]);
-        $pending = (int)$st->fetchColumn();
-    } catch (Exception $ex) { $pending = 0; }
-}
-
-try {
-    $st = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE user_id = ? AND status_rent = 1");
-    $st->execute([$landlord_id]);
-    $rented = (int)$st->fetchColumn();
-} catch (Exception $ex) { $rented = 0; }
-
-/* -------------------- Fetch posts with thumbnail (single optimized query) -------------------- */
-try {
-    $sql = "\n        SELECT p.*,\n          (\n            SELECT COALESCE(NULLIF(filename,''), NULLIF(file_name,''), NULLIF(image,''), NULLIF(image_path,''), NULLIF(path,''), NULLIF(filepath,'')) \n            FROM post_images WHERE post_id = p.id ORDER BY id ASC LIMIT 1\n          ) AS thumbnail\n        FROM posts p\n        WHERE p.user_id = ?\n        ORDER BY p.created_at DESC\n    ";
-    $posts_stmt = $pdo->prepare($sql);
-    $posts_stmt->execute([$landlord_id]);
-    $posts = $posts_stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $ex) {
-    // fallback: only posts
-    try {
-        $st = $pdo->prepare("SELECT * FROM posts WHERE user_id = ? ORDER BY created_at DESC");
-        $st->execute([$landlord_id]);
-        $posts = $st->fetchAll(PDO::FETCH_ASSOC);
-    } catch (Exception $ex2) { $posts = []; }
-}
-
-/* ensure we have request container for each post to avoid undefined */
 $requests_by_post = [];
 foreach ($posts as $pp) $requests_by_post[(int)$pp['id']] = ['pending'=>[], 'approved'=>[], 'all'=>[]];
 
-/* -------------------- Fetch requests for these posts (single query) -------------------- */
-if ($requests_table && !empty($posts)) {
-    $post_ids = array_map(function($x){ return (int)$x['id']; }, $posts);
-    $placeholders = implode(',', array_fill(0, count($post_ids), '?'));
-    try {
-        $sql = "SELECT * FROM {$requests_table} WHERE post_id IN ({$placeholders}) ORDER BY created_at DESC";
-        $q = $pdo->prepare($sql);
-        $q->execute($post_ids);
-        $allReqs = $q->fetchAll(PDO::FETCH_ASSOC);
-    } catch (Exception $ex) { $allReqs = []; }
-
-    foreach ($allReqs as $r) {
-        $pid = (int)($r['post_id'] ?? 0);
-        if ($pid <= 0) continue;
-        if (!isset($requests_by_post[$pid])) $requests_by_post[$pid] = ['pending'=>[], 'approved'=>[], 'all'=>[]];
-
-        $fullname = $r['fullname'] ?? ($r['name'] ?? '—');
-        $phone = $r['phone'] ?? ($r['phone_number'] ?? ($r['mobile'] ?? '—'));
-        $statusRaw = strtolower(trim((string)($r['status'] ?? '')));
-        $status = $statusRaw;
-        if ($statusRaw === '0') $status = 'pending';
-        if ($statusRaw === '1') $status = 'approved';
-
-        $entry = $r;
-        $entry['_display_fullname'] = $fullname;
-        $entry['_display_phone'] = $phone;
-        $entry['_status_norm'] = $status;
-
-        $requests_by_post[$pid]['all'][] = $entry;
-        if (in_array($status, ['pending','waiting','new'])) $requests_by_post[$pid]['pending'][] = $entry;
-        if (in_array($status, ['approved','accepted'])) $requests_by_post[$pid]['approved'][] = $entry;
-    }
-}
-
-/* -------------------- Optional: fetch tenant users if posts.tenant_id exists -------------------- */
-$tenant_user_cache = [];
 if (!empty($posts)) {
-    try {
-        $st = $pdo->prepare("\n            SELECT COUNT(*) FROM information_schema.columns \n            WHERE table_schema = DATABASE() AND table_name = 'posts' AND column_name = 'tenant_id'\n        ");
-        $st->execute();
-        $has_tenant_col = (bool)$st->fetchColumn();
-    } catch (Exception $ex) { $has_tenant_col = false; }
+    $pids = array_column($posts, 'id');
+    $placeholders = implode(',', array_fill(0, count($pids), '?'));
+    $q = $pdo->prepare("SELECT * FROM rental_requests WHERE post_id IN ($placeholders) ORDER BY created_at DESC");
+    $q->execute($pids);
+    
+    while ($r = $q->fetch(PDO::FETCH_ASSOC)) {
+        $pid = (int)$r['post_id'];
+        $status = strtolower(trim((string)$r['status']));
+        $r['_name'] = $r['fullname'] ?? ($r['name'] ?? 'Khách lạ');
+        $r['_phone'] = $r['phone'] ?? ($r['phone_number'] ?? 'N/A');
 
-    if ($has_tenant_col) {
-        $tids = [];
-        foreach ($posts as $pp) {
-            $tid = (int)($pp['tenant_id'] ?? 0);
-            if ($tid > 0) $tids[$tid] = $tid;
-        }
-        if (!empty($tids) && table_exists($pdo, 'users')) {
-            $place = implode(',', array_fill(0, count($tids), '?'));
-            try {
-                $st = $pdo->prepare("SELECT id, COALESCE(fullname,name) AS name, COALESCE(phone,phone_number) AS phone FROM users WHERE id IN ({$place})");
-                $st->execute(array_values($tids));
-                $rows = $st->fetchAll(PDO::FETCH_ASSOC);
-                foreach ($rows as $r) $tenant_user_cache[(int)$r['id']] = $r;
-            } catch (Exception $ex) { /* ignore */ }
-        }
+        $requests_by_post[$pid]['all'][] = $r;
+        if (in_array($status, ['pending', '0', 'waiting', 'new'])) $requests_by_post[$pid]['pending'][] = $r;
+        elseif (in_array($status, ['approved', '1', 'accepted'])) $requests_by_post[$pid]['approved'][] = $r;
     }
+
+    usort($posts, function($a, $b) use ($requests_by_post) {
+        $countA = count($requests_by_post[(int)$a['id']]['pending'] ?? []);
+        $countB = count($requests_by_post[(int)$b['id']]['pending'] ?? []);
+        if ($countB > 0 && $countA == 0) return 1;
+        if ($countA > 0 && $countB == 0) return -1;
+        return strtotime($b['created_at']) <=> strtotime($a['created_at']);
+    });
 }
 
-/* -------------------- Price helper -------------------- */
-function fmt_price_million($raw) {
-    if ($raw === null || $raw === '') return '';
-    $clean = str_replace([',','VNĐ','vnd','đ'], ['', '', '', ''], (string)$raw);
-    $clean = trim($clean);
-    // nếu lưu dạng số thập phân như 3.5 hoặc 3500000
-    if (is_numeric($clean)) {
-        $num = (float)$clean;
-        // nếu số lớn hơn 1000 -> coi là VND
-        if ($num > 1000) $million = $num / 1000000.0;
-        else $million = $num; // đã là triệu
-        $s = number_format($million, 1, '.', '');
-        $s = rtrim(rtrim($s, '0'), '.');
-        return $s . ' triệu';
-    }
-    // nếu dạng chữ có số: '3.4 triệu'
-    if (preg_match('/([0-9]+\.?[0-9]*)/', $raw, $m)) {
-        $million = (float)$m[1];
-        $s = number_format($million, 1, '.', '');
-        $s = rtrim(rtrim($s, '0'), '.');
-        return $s . ' triệu';
-    }
-    return e($raw);
-}
+$total_rooms = count($posts);
+$rented_count = count(array_filter($posts, fn($p) => ($p['status_rent'] ?? 0) == 1));
+$pending_count = 0;
+foreach($requests_by_post as $rp) $pending_count += count($rp['pending']);
 ?>
+
 <!doctype html>
 <html lang="vi">
 <head>
 <meta charset="utf-8">
-<title>Quản lý phòng</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quản lý phòng trọ</title>
 <style>
-:root{--accent:#2563eb;--muted:#6b7280;--bg:#f8f9fb;--card:#fff;--border:#e6e8eb;--text:#111827}
-*{box-sizing:border-box}
-body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}
-.wrap{max-width:1000px;margin:28px auto;padding:18px}
-.header-row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}
-.h-title{font-size:22px;font-weight:700;margin:0}
-.btn-new{display:inline-block;padding:8px 12px;border-radius:8px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
-.stat{background:var(--card);border:1px solid var(--border);padding:12px;border-radius:10px}
-.stat .label{font-size:13px;color:var(--muted);margin-bottom:6px}
-.stat .value{font-size:18px;font-weight:700;color:var(--accent)}
-.list{display:flex;flex-direction:column;gap:12px}
-.room{display:grid;grid-template-columns:110px 1fr 130px 120px;gap:12px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;align-items:center;transition:box-shadow .12s}
-.room:hover{box-shadow:0 8px 24px rgba(2,6,23,0.06)}
-@media(max-width:820px){.room{grid-template-columns:96px 1fr}.room>.col-price,.room>.col-actions{grid-column:1/-1;display:flex;justify-content:flex-end;margin-top:10px}}
-.thumb{width:110px;height:86px;object-fit:cover;border-radius:8px;border:1px solid var(--border);background:#f3f4f6}
-.title{font-size:15px;font-weight:700;margin:0;color:var(--text)}
-.meta{font-size:13px;color:var(--muted);margin-top:6px}
-.col-price{text-align:right}
-.price{font-weight:800;color:var(--accent);font-size:16px}
-.price-label{font-size:12px;color:var(--muted);margin-top:6px}
-.badge{display:inline-block;padding:6px 10px;border-radius:999px;font-weight:700;font-size:12px}
-.badge-available{background:#eef2ff;color:var(--accent);border:1px solid #e6eeff}
-.badge-rented{background:#ecfdf5;color:#15803d;border:1px solid #d0f0d8}
-.col-actions{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
-.link{font-size:13px;color:var(--accent);text-decoration:none;padding:8px 12px;border-radius:10px;border:1px solid transparent}
-.link-muted{color:var(--muted);border:1px solid var(--border);padding:8px 12px;border-radius:10px;background:transparent}
-.req-box{display:none;margin-top:12px;border-top:1px dashed var(--border);padding-top:12px}
-.req-item{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #f1f3f5}
-.req-name{font-weight:700;font-size:14px}
-.req-meta{font-size:13px;color:var(--muted);margin-top:4px}
-.small{font-size:13px;color:var(--muted)}
-.action-btn{display:inline-block;padding:8px 10px;border-radius:8px;color:#fff;text-decoration:none;font-weight:700;font-size:13px}
-.approve{background:var(--accent)}.reject{background:#d62b2b}.view{background:#374151}
-.tenant-box{margin-top:8px;padding:8px;border-radius:8px;background:#fbfeff;border:1px solid #eef9ff;font-size:13px}
-.footer-gap{height:36px}
-.notice{padding:14px;border:1px solid #f1f3f5;border-radius:12px;background:#fff;color:var(--muted);text-align:center}
-.toggle-btn{display:inline-block;padding:8px 10px;border-radius:10px;background:#fff;border:1px solid var(--border);font-weight:600;cursor:pointer}
-.tab-bar{display:flex;gap:10px;margin-bottom:16px}
-.tab-btn{
-  padding:10px 14px;
-  border-radius:10px;
-  border:1px solid var(--border);
-  background:#fff;
-  font-weight:700;
-  cursor:pointer;
-}
-.tab-btn.active{
-  background:var(--accent);
-  color:#fff;
-  border-color:var(--accent);
-}
-.tab-content{display:none}
-.tab-content.active{display:block}
-
+    :root{--accent:#2563eb;--danger:#dc2626;--success:#16a34a;--bg:#f3f4f6;--border:#e5e7eb;--text:#1f2937}
+    body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);margin:0;padding:20px;color:var(--text)}
+    .container{max-width:1000px;margin:0 auto}
+    .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:15px;margin-bottom:25px}
+    .stat-card{background:#fff;padding:15px;border-radius:12px;border:1px solid var(--border);text-align:center}
+    .stat-card b{font-size:20px;color:var(--accent);display:block}
+    .tab-nav{display:flex;gap:10px;margin-bottom:20px;border-bottom:2px solid var(--border)}
+    .tab-btn{padding:12px 20px;cursor:pointer;font-weight:700;color:#6b7280;border-bottom:3px solid transparent;background:none;border:none;font-size:15px}
+    .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+    .room-item{background:#fff;border-radius:15px;padding:15px;margin-bottom:15px;display:flex;gap:20px;border:1px solid var(--border);position:relative}
+    .room-thumb{width:140px;height:100px;border-radius:10px;object-fit:cover;background:#eee;flex-shrink:0}
+    .room-info{flex:1}
+    .room-info h3{margin:0 0 5px 0;font-size:17px}
+    .room-info h3 a{text-decoration:none;color:#111827}
+    .price{font-weight:800;color:var(--accent);font-size:18px}
+    .btn-group{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+    .btn{padding:7px 14px;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;cursor:pointer;border:1px solid #ddd;background:#fff;color:#333;display:inline-flex;align-items:center;gap:5px}
+    .btn-primary{background:var(--accent);color:#fff;border:none}
+    .btn-danger{color:var(--danger);border-color:var(--danger)}
+    .btn-waiting{background:#eff6ff;color:var(--accent);border-color:#bfdbfe}
+    .req-box{display:none;margin-top:15px;padding-top:15px;border-top:1px dashed #ddd}
+    .req-card{background:#f9fafb;padding:10px;border-radius:8px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border:1px solid #eee}
+    .badge-new{background:var(--danger);color:#fff;padding:2px 6px;border-radius:10px;font-size:10px}
+    .tab-content{display:none}.tab-content.active{display:block}
+    .tenant-info{background:#f0fdf4;padding:10px;border-radius:8px;border-left:4px solid var(--success);margin-top:8px;font-size:13px}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="header-row">
-    <h1 class="h-title">Quản lý phòng</h1>
-    <div><a href="post_new.php" class="btn-new">Đăng tin mới</a></div>
-  </div>
 
-  <div class="stats" role="status" aria-label="Thống kê">
-    <div class="stat"><div class="label">Tổng phòng</div><div class="value"><?= (int)$total_rooms ?></div></div>
-    <div class="stat"><div class="label">Chờ duyệt</div><div class="value"><?= (int)$pending ?></div></div>
-    <div class="stat"><div class="label">Đang thuê</div><div class="value"><?= (int)$rented ?></div></div>
-    <div class="stat"><div class="label">Phòng trống</div><div class="value"><?= max(0, $total_rooms - $rented) ?></div></div>
-  </div>
-<div class="tab-bar">
-  <button class="tab-btn active" data-tab="rented">
-    🟢 Đang thuê (<?= (int)$rented ?>)
-  </button>
-  <button class="tab-btn" data-tab="available">
-    🔵 Phòng trống (<?= max(0,$total_rooms-$rented) ?>)
-  </button>
-</div>
-
-  <?php if (empty($posts)): ?>
-    <div class="notice">
-      <?php if ($total_rooms > 0): ?>
-        Có tổng <strong><?= (int)$total_rooms ?></strong> phòng trong cơ sở dữ liệu nhưng không thể tải chi tiết phòng ở trang này.
-      <?php else: ?>
-        Bạn chưa có phòng nào.
-      <?php endif; ?>
+<div class="container">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <h1 style="font-size:24px">Quản lý nhà cho thuê</h1>
+        <a href="post_new.php" class="btn btn-primary" style="padding:10px 20px">+ Đăng tin mới</a>
     </div>
-  <?php else: ?>
-  <div class="tab-content active tab-rented">
-  <div class="list">
-      <?php foreach ($posts as $p):
 
-  // ❗ CHỈ LẤY PHÒNG ĐANG THUÊ
-  if ((int)($p['status_rent'] ?? 0) !== 1) continue;
+    <div class="stats-grid">
+        <div class="stat-card">Tổng phòng <b><?= $total_rooms ?></b></div>
+        <div class="stat-card">Đang thuê <b><?= $rented_count ?></b></div>
+        <div class="stat-card">Đơn mới <b><?= $pending_count ?></b></div>
+        <div class="stat-card">Phòng trống <b><?= $total_rooms - $rented_count ?></b></div>
+    </div>
 
-        $postId = (int)$p['id'];
-        $thumbVal = $p['thumbnail'] ?? ($p['image'] ?? ($p['image_path'] ?? ''));
-        $thumb = resolve_thumb_url($thumbVal);
+    <div class="tab-nav">
+        <button class="tab-btn active" onclick="switchTab(event, 'available')">🔵 Phòng trống</button>
+        <button class="tab-btn" onclick="switchTab(event, 'rented')">🟢 Đang thuê</button>
+    </div>
 
-        $is_rented = ((int)($p['status_rent'] ?? 0)) === 1;
+    <?php foreach(['available' => 0, 'rented' => 1] as $tabId => $statusRent): ?>
+    <div id="<?= $tabId ?>" class="tab-content <?= $tabId === 'available' ? 'active' : '' ?>">
+        <?php 
+        $count = 0;
+        foreach ($posts as $p): 
+            if ((int)($p['status_rent'] ?? 0) !== $statusRent) continue;
+            $count++;
+            $pid = (int)$p['id'];
+            $pendings = $requests_by_post[$pid]['pending'] ?? [];
+            $approveds = $requests_by_post[$pid]['approved'] ?? [];
+        ?>
+            <div class="room-item" style="<?= !empty($pendings) ? 'border-left:5px solid var(--accent)' : '' ?>">
+                <img src="<?= resolve_thumb_url($p['thumbnail'] ?? '') ?>" class="room-thumb" onerror="this.src='assets/default.png'">
+                <div class="room-info">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start">
+                        <h3><a href="post_detail.php?id=<?= $pid ?>"><?= e($p['title']) ?></a></h3>
+                        <span class="price"><?= fmt_price_million($p['price']) ?></span>
+                    </div>
+                    <div style="font-size:13px; color:#6b7280">📍 <?= e($p['khu_vuc'] ?? 'Chưa rõ địa chỉ') ?></div>
 
-        $reqs_pending = $requests_by_post[$postId]['pending'] ?? [];
-        $reqs_approved = $requests_by_post[$postId]['approved'] ?? [];
-        $reqs_all = $requests_by_post[$postId]['all'] ?? [];
+                    <?php if ($statusRent === 1 && !empty($approveds)): $t = $approveds[0]; ?>
+                        <div class="tenant-info">
+                            <b>Khách thuê:</b> <?= e($t['_name']) ?> — <?= e($t['_phone']) ?>
+                        </div>
+                    <?php endif; ?>
 
-        // tenant display: prefer posts.tenant_id, else first approved request
-        $tenant_display = null;
-        $tid = intval($p['tenant_id'] ?? 0);
-        if ($tid > 0 && isset($tenant_user_cache[$tid])) {
-            $tu = $tenant_user_cache[$tid];
-            $tenant_display = ['name'=>$tu['name'] ?? '—','phone'=>$tu['phone'] ?? '—'];
-        } elseif (!empty($reqs_approved)) {
-            $first = $reqs_approved[0];
-            $tenant_display = ['name'=>$first['_display_fullname'] ?? '—','phone'=>$first['_display_phone'] ?? '—','created_at'=>$first['created_at'] ?? ''];
-        }
-      ?>
-      <div class="room" aria-labelledby="room-<?= $postId ?>" id="room-row-<?= $postId ?>">
-        <div>
-          <img src="<?= e($thumb) ?>" alt="<?= e($p['title'] ?? '') ?>" class="thumb" onerror="this.src='assets/default.png'">
-          <?php if ($is_rented && $tenant_display): ?>
-            <div class="tenant-box">
-              <div style="font-weight:700">Người thuê: <?= e($tenant_display['name']) ?></div>
-              <div class="small"><?= e($tenant_display['phone']) ?> <?= !empty($tenant_display['created_at']) ? '· ' . e(date('d/m/Y', strtotime($tenant_display['created_at']))) : '' ?></div>
-            </div>
-          <?php endif; ?>
-        </div>
+                    <div class="btn-group">
+                        <?php if ($statusRent === 1): ?>
+                            <a href="rent_action.php?action=reset&id=<?= $pid ?>" class="btn btn-danger" onclick="return confirm('Khách trả phòng?')">Trả phòng (Làm trống)</a>
+                        <?php else: ?>
+                            <a href="edit_post.php?id=<?= $pid ?>" class="btn">Sửa tin</a>
+                            <a href="delete_post.php?id=<?= $pid ?>" class="btn btn-danger" onclick="return confirm('Xóa phòng này?')">Xóa</a>
+                        <?php endif; ?>
+                        <button class="btn <?= !empty($pendings) ? 'btn-waiting' : '' ?>" onclick="toggleReq(<?= $pid ?>)">
+                            Yêu cầu <?= !empty($pendings) ? '<span class="badge-new">'.count($pendings).'</span>' : '(0)' ?>
+                        </button>
+                    </div>
 
-        <div>
-<a href="post_detail.php?id=<?= $postId ?>" class="title" style="text-decoration:none">
-  <?= e($p['title'] ?? '—') ?>
-</a>
-          <div class="meta"><?= e($p['khu_vuc'] ?? '') ?> • <?= e(date('d/m/Y', strtotime($p['created_at'] ?? 'now'))) ?></div>
-
-          <div class="small" style="margin-top:8px">
-            <?php if (!empty($reqs_pending)): ?>
-              <span style="color:var(--accent);font-weight:700"><?= count($reqs_pending) ?> yêu cầu chờ</span>
-            <?php elseif (!empty($reqs_approved)): ?>
-              <span style="color:#15803d;font-weight:700">Người thuê (đã duyệt): <?= e($tenant_display['name'] ?? '—') ?></span>
-            <?php else: ?>
-              <span class="small">Chưa có yêu cầu</span>
-            <?php endif; ?>
-          </div>
-
-          <div id="req-<?= $postId ?>" class="req-box" aria-hidden="true">
-            <div style="margin-bottom:8px;font-weight:700">Yêu cầu chờ</div>
-            <?php if (!empty($reqs_pending)): ?>
-              <?php foreach ($reqs_pending as $rq): ?>
-                <div class="req-item">
-                  <div>
-                    <div class="req-name"><?= e($rq['_display_fullname']) ?></div>
-                    <div class="req-meta"><?= e($rq['_display_phone']) ?> · <?= e($rq['created_at'] ?? '') ?></div>
-                  </div>
-                  <div style="display:flex;gap:8px;align-items:center">
-                    <a href="rent_action.php?action=approve&id=<?= $postId ?>&req_id=<?= intval($rq['id']) ?>" class="action-btn approve">Duyệt</a>
-                    <a href="rent_action.php?action=reject&id=<?= $postId ?>&req_id=<?= intval($rq['id']) ?>" class="action-btn reject">Từ chối</a>
-                    <a href="view_request.php?id=<?= intval($rq['id']) ?>" class="action-btn view">Xem</a>
-                  </div>
+                    <div id="req-box-<?= $pid ?>" class="req-box">
+                        <h4 style="margin:0 0 10px 0; font-size:14px">Đơn đăng ký:</h4>
+                        <?php if (empty($requests_by_post[$pid]['all'])): ?>
+                            <p style="font-size:12px; color:#999">Chưa có ai đăng ký.</p>
+                        <?php else: foreach ($requests_by_post[$pid]['all'] as $rq): 
+                            $is_approved = in_array($rq['status'], ['approved','1']);
+                            $is_rejected = in_array($rq['status'], ['rejected','cancel','2']);
+                        ?>
+                            <div class="req-card" style="<?= $is_rejected ? 'opacity:0.6' : '' ?>">
+                                <div>
+                                    <div style="font-weight:700; font-size:14px; <?= $is_approved?'color:green':($is_rejected?'color:red':'') ?>">
+                                        <?= e($rq['_name']) ?> 
+                                        <?= $is_rejected ? '(Đã từ chối)' : '' ?>
+                                    </div>
+                                    <div style="font-size:12px; color:#666"><?= e($rq['_phone']) ?></div>
+                                </div>
+                                <div style="display:flex; gap:5px">
+                                    <a href="view_request.php?id=<?= $rq['id'] ?>" class="btn" style="padding:4px 8px; font-size:11px">Xem đơn</a>
+                                    <?php if (!$is_approved && !$is_rejected): ?>
+                                        <a href="rent_action.php?action=approve&id=<?= $pid ?>&req_id=<?= $rq['id'] ?>" class="btn btn-primary" style="padding:4px 8px; font-size:11px">Duyệt</a>
+                                        <a href="rent_action.php?action=reject&id=<?= $pid ?>&req_id=<?= $rq['id'] ?>" class="btn btn-danger" style="padding:4px 8px; font-size:11px" onclick="return confirm('Từ chối khách này?')">X</a>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; endif; ?>
+                    </div>
                 </div>
-              <?php endforeach; ?>
-            <?php else: ?>
-              <div class="small">Không có yêu cầu chờ.</div>
-            <?php endif; ?>
-
-            <div style="margin-top:12px;font-weight:700">Đã duyệt</div>
-            <?php if (!empty($reqs_approved)): ?>
-              <?php foreach ($reqs_approved as $ar): ?>
-                <div class="req-item">
-                  <div>
-                    <div class="req-name"><?= e($ar['_display_fullname']) ?></div>
-                    <div class="req-meta"><?= e($ar['_display_phone']) ?> · <?= e($ar['created_at'] ?? '') ?></div>
-                  </div>
-                  <div style="display:flex;gap:8px;align-items:center">
-                    <span class="small" style="padding:6px 10px;border-radius:8px;background:#ecfdf5;color:#15803d;font-weight:700">Đã duyệt</span>
-                    <a href="view_request.php?id=<?= intval($ar['id']) ?>" class="action-btn view">Xem</a>
-                  </div>
-                </div>
-              <?php endforeach; ?>
-            <?php else: ?>
-              <div class="small">Không có yêu cầu nào đã duyệt.</div>
-            <?php endif; ?>
-
-            <div style="margin-top:12px;font-weight:700">Lịch sử đăng ký</div>
-            <?php if (!empty($reqs_all)): ?>
-              <?php foreach ($reqs_all as $h): ?>
-                <div class="req-item">
-                  <div>
-                    <div class="req-name"><?= e($h['_display_fullname']) ?> <span style="font-weight:600;color:var(--muted);font-size:12px"> (<?= e($h['_status_norm']) ?>)</span></div>
-                    <div class="req-meta"><?= e($h['_display_phone']) ?> · <?= e($h['created_at'] ?? '') ?></div>
-                  </div>
-                  <div style="display:flex;align-items:center;gap:8px">
-                    <a href="view_request.php?id=<?= intval($h['id']) ?>" class="action-btn view">Xem</a>
-                  </div>
-                </div>
-              <?php endforeach; ?>
-            <?php else: ?>
-              <div class="small">Không có lịch sử đăng ký.</div>
-            <?php endif; ?>
-          </div>
-        </div>
-
-        <div class="col-price">
-          <div class="price"><?= e(fmt_price_million($p['price'] ?? '')) ?></div>
-          <div class="price-label">Giá</div>
-        </div>
-
-        <div class="col-actions">
-          <?php if ($is_rented): ?>
-            <span class="badge badge-rented">Đang thuê</span>
-            <div style="margin-top:8px;display:flex;gap:8px;flex-direction:column;align-items:flex-end">
-              <a href="rent_action.php?action=reset&id=<?= $postId ?>" class="link-muted">Trả phòng</a>
-              <button class="toggle-btn" data-toggle="req-<?= $postId ?>">Xem yêu cầu</button>
             </div>
-          <?php else: ?>
-            <span class="badge badge-available">Phòng trống</span>
-            <div style="margin-top:8px;display:flex;gap:8px;flex-direction:column;align-items:flex-end">
-              <div style="display:flex;gap:8px">
-                <a href="edit_post.php?id=<?= $postId ?>" class="link">Sửa</a>
-                <a href="delete_post.php?id=<?= $postId ?>" onclick="return confirm('Xóa phòng này?')" class="link link-muted">Xóa</a>
-              </div>
-              <button class="toggle-btn" data-toggle="req-<?= $postId ?>">Xem yêu cầu</button>
-            </div>
-          <?php endif; ?>
-        </div>
-      </div>
-      <?php endforeach; ?>
-        </div>
-</div>
-
-<div class="tab-content tab-available">
-  <div class="list">
-<?php foreach ($posts as $p):
-
-    // ✅ CHỈ LẤY PHÒNG TRỐNG
-    if ((int)($p['status_rent'] ?? 0) === 1) continue;
-
-    $postId = (int)$p['id'];
-    $thumbVal = $p['thumbnail'] ?? ($p['image'] ?? ($p['image_path'] ?? ''));
-    $thumb = resolve_thumb_url($thumbVal);
-
-    $is_rented = false;
-
-    $reqs_pending = $requests_by_post[$postId]['pending'] ?? [];
-    $reqs_approved = $requests_by_post[$postId]['approved'] ?? [];
-    $reqs_all = $requests_by_post[$postId]['all'] ?? [];
-?>
-<div class="room" id="room-row-<?= $postId ?>">
-  <div>
-    <img src="<?= e($thumb) ?>" class="thumb" onerror="this.src='assets/default.png'">
-  </div>
-
-  <div>
-    <a href="post_detail.php?id=<?= $postId ?>" class="title" style="text-decoration:none">
-      <?= e($p['title'] ?? '—') ?>
-    </a>
-    <div class="meta"><?= e($p['khu_vuc'] ?? '') ?> • <?= e(date('d/m/Y', strtotime($p['created_at'] ?? 'now'))) ?></div>
-
-    <div class="small" style="margin-top:8px">
-      <?php if (!empty($reqs_pending)): ?>
-        <span style="color:var(--accent);font-weight:700"><?= count($reqs_pending) ?> yêu cầu chờ</span>
-      <?php else: ?>
-        <span class="small">Chưa có yêu cầu</span>
-      <?php endif; ?>
+        <?php endforeach; 
+        if ($count === 0) echo '<p style="text-align:center; color:#999; padding:40px;">Không có phòng nào trong mục này.</p>';
+        ?>
     </div>
-  </div>
-
-  <div class="col-price">
-    <div class="price"><?= e(fmt_price_million($p['price'] ?? '')) ?></div>
-    <div class="price-label">Giá</div>
-  </div>
-
-  <div class="col-actions">
-    <span class="badge badge-available">Phòng trống</span>
-    <div style="margin-top:8px;display:flex;gap:8px;flex-direction:column;align-items:flex-end">
-      <div style="display:flex;gap:8px">
-        <a href="edit_post.php?id=<?= $postId ?>" class="link">Sửa</a>
-        <a href="delete_post.php?id=<?= $postId ?>" onclick="return confirm('Xóa phòng này?')" class="link link-muted">Xóa</a>
-      </div>
-      <button class="toggle-btn" data-toggle="req-<?= $postId ?>">Xem yêu cầu</button>
-    </div>
-  </div>
-</div>
-<?php endforeach; ?>
-  </div>
-</div>
-    </div>
-  <?php endif; ?>
-
-  <div class="footer-gap"></div>
+    <?php endforeach; ?>
 </div>
 
 <script>
-// Toggle request box: robust
-document.addEventListener('click', function(e){
-  const t = e.target.closest('[data-toggle]');
-  if(!t) return;
-  const id = t.getAttribute('data-toggle');
-  const box = document.getElementById(id);
-  if(!box) return;
-
-  // close others
-  document.querySelectorAll('.req-box').forEach(function(b){
-    if (b !== box) {
-      b.style.display = 'none';
-      b.setAttribute('aria-hidden', 'true');
-    }
-  });
-
-  const comp = window.getComputedStyle(box);
-  const shown = comp && comp.display && comp.display !== 'none';
-  if (shown) {
-    box.style.display = 'none';
-    box.setAttribute('aria-hidden', 'true');
-  } else {
-    box.style.display = 'block';
-    box.setAttribute('aria-hidden', 'false');
-    setTimeout(function(){ box.scrollIntoView({behavior:'smooth', block:'center'}); }, 120);
-  }
-});
-</script>
-<script>
-document.querySelectorAll('.tab-btn').forEach(btn=>{
-  btn.onclick = ()=>{
-    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
-
-    btn.classList.add('active');
-    document.querySelector('.tab-'+btn.dataset.tab).classList.add('active');
-  }
-});
+function switchTab(evt, tabId) {
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(tabId).classList.add('active');
+    evt.currentTarget.classList.add('active');
+}
+function toggleReq(pid) {
+    const box = document.getElementById('req-box-' + pid);
+    box.style.display = (box.style.display === 'block') ? 'none' : 'block';
+}
 </script>
 </body>
 </html>
