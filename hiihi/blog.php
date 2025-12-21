@@ -1,0 +1,1 @@
+<?php require __DIR__.'/includes/header.php'; ?><div class='card'><h2>Blog</h2><p class='small'>Nội dung blog demo.</p></div><?php require __DIR__.'/includes/footer.php'; ?>

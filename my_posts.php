@@ -8,7 +8,7 @@ if (!isset($_SESSION['user'])) {
     exit;
 }
 
-// Base URL sửa theo thư mục gốc của bạn
+// Giữ nguyên BASE_URL nhưng chú ý cách dùng bên dưới
 define("BASE_URL", "/hihihi/"); 
 
 $u = $_SESSION['user'];
@@ -25,7 +25,6 @@ if (!$isAdmin && !$isLandlord) {
 }
 
 /* ===== LẤY DANH SÁCH ===== */
-
 if ($isAdmin) {
     $stmt = $pdo->query("
         SELECT p.*, 
@@ -51,7 +50,6 @@ $posts = $stmt->fetchAll(PDO::FETCH_ASSOC);
 function esc($s) {
     return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 }
-
 ?>
 
 <main class="max-w-6xl mx-auto p-4">
@@ -66,10 +64,14 @@ function esc($s) {
 
         <?php foreach ($posts as $p): 
 
-            // ĐÚNG ĐƯỜNG DẪN ẢNH
-            $img = $p['thumbnail']
-                ? BASE_URL . "uploads/post_images/" . $p['thumbnail']
-                : BASE_URL . "assets/default.png";
+            /**
+             * SỬA LẠI ĐƯỜNG DẪN ẢNH DỰA TRÊN BÀI MẪU
+             * 1. Nếu có file trong database: nối 'uploads/' + tên file
+             * 2. Nếu không có: dùng placeholder hoặc default.png
+             */
+            $img = $p['thumbnail'] 
+                ? 'uploads/' . $p['thumbnail'] 
+                : 'https://via.placeholder.com/400x250?text=No+Image';
 
             $badgeColor = [
                 'approved' => 'text-green-700 bg-green-100',
@@ -81,15 +83,14 @@ function esc($s) {
 
         <div class="bg-white shadow rounded-lg p-4 flex gap-4 hover:shadow-xl transition">
 
-            <!-- ẢNH -->
-            <a href="post_detail.php?id=<?= $p['id'] ?>">
+            <a href="post_detail.php?id=<?= $p['id'] ?>" class="shrink-0 overflow-hidden rounded-lg">
                 <img src="<?= esc($img) ?>" 
-                     class="w-40 h-28 object-cover rounded border">
+                     class="w-40 h-28 object-cover border"
+                     onerror="this.src='https://via.placeholder.com/400x250?text=Loi+Anh'">
             </a>
 
             <div class="flex-1">
                 
-                <!-- TIÊU ĐỀ -->
                 <a href="post_detail.php?id=<?= $p['id'] ?>" class="no-underline">
                     <h3 class="text-xl font-semibold hover:text-blue-600 transition">
                         <?= esc($p['title']) ?>
@@ -115,35 +116,28 @@ function esc($s) {
                 <div class="mt-3 flex gap-2">
 
                     <?php if ($isAdmin): ?>
-
                         <a href="approve_post.php?id=<?= $p['id'] ?>&action=approve"
                            class="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700">
                            Duyệt
                         </a>
-
                         <a href="approve_post.php?id=<?= $p['id'] ?>&action=reject"
                            class="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700">
                            Từ chối
                         </a>
-
                     <?php else: ?>
-
                         <a href="edit_post.php?id=<?= $p['id'] ?>" 
                            class="px-3 py-1 text-sm bg-yellow-400 rounded hover:bg-yellow-500">
                            Sửa
                         </a>
-
                         <a href="delete_post.php?id=<?= $p['id'] ?>" 
                            onclick="return confirm('Bạn chắc chắn muốn xóa bài này?')" 
                            class="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700">
                            Xóa
                         </a>
-
                     <?php endif; ?>
 
                 </div>
             </div>
-
         </div>
 
         <?php endforeach; ?>
