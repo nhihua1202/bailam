@@ -1,35 +1,36 @@
 <?php
-require_once __DIR__ . '/../db.php';
-require_once __DIR__ . '/../header.php';
+// admin/approve_post.php
+// FILE XỬ LÝ - KHÔNG ĐƯỢC REQUIRE header.php
 
-// Kiểm tra quyền admin
-if (empty($_SESSION['user']) || ($_SESSION['user']['role'] ?? '') !== 'admin') {
-    echo 'Không có quyền';
+require '../db.php';
+require '../functions.php';
+
+session_start();
+$u = currentUser();
+
+// chỉ ADMIN được duyệt
+if (!$u || $u['role'] !== 'admin') {
+    die('Không có quyền');
+}
+
+$id     = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+$action = $_GET['action'] ?? '';
+
+if ($id <= 0) {
+    header('Location: manage_posts.php');
     exit;
 }
 
-$id = isset($_GET['id']) ? intval($_GET['id']) : 0;
-$action = $_GET['action'] ?? '';
-
-if ($id > 0 && in_array($action, ['approve', 'reject'])) {
-
-    // Kiểm tra bài có tồn tại
-    $check = $pdo->prepare("SELECT id FROM posts WHERE id = ?");
-    $check->execute([$id]);
-
-    if ($check->fetch()) {
-
-        $status = ($action === 'approve') ? 'approved' : 'rejected';
-
-        $stmt = $pdo->prepare("
-            UPDATE posts
-            SET status = ?, reviewed_by = ?, reviewed_at = NOW()
-            WHERE id = ?
-        ");
-        $stmt->execute([$status, $_SESSION['user']['id'], $id]);
-    }
+if ($action === 'approve') {
+    $stmt = $pdo->prepare("UPDATE posts SET status='approved' WHERE id=?");
+    $stmt->execute([$id]);
 }
 
-header("Location: manage_posts.php");
+if ($action === 'reject') {
+    $stmt = $pdo->prepare("UPDATE posts SET status='rejected' WHERE id=?");
+    $stmt->execute([$id]);
+}
+
+// QUAY LẠI TRANG QUẢN LÝ
+header('Location: manage_posts.php');
 exit;
-?>
