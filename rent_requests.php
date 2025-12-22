@@ -34,7 +34,7 @@ $stmt->execute(['uid' => $uid]);
 $requests = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 /* ===============================
-   LẤY ẢNH ĐẠI DIỆN (KHÔNG VỠ)
+   LẤY ẢNH ĐẠI DIỆN
 ================================ */
 foreach ($requests as &$req) {
     $img = $pdo->prepare("
@@ -55,12 +55,10 @@ foreach ($requests as &$req) {
 }
 unset($req);
 ?>
+
 <style>
-        /* MÀU BE ĐẬM HƠN ĐỂ NHÌN RÕ RỆT */
-        body { 
-            background-color: #f5f5dc !important; 
-        }
-        </style>
+body { background-color: #f5f5dc !important; }
+</style>
 
 <main class="max-w-4xl mx-auto p-4">
 
@@ -83,7 +81,6 @@ unset($req);
                     <!-- ẢNH -->
                     <a href="post_detail.php?id=<?= $r['post_id'] ?>" class="flex-shrink-0">
                         <img src="<?= htmlspecialchars($r['thumbnail']) ?>"
-                             alt="Ảnh phòng"
                              class="w-32 h-24 rounded object-cover border">
                     </a>
 
@@ -115,12 +112,14 @@ unset($req);
                             <span class="text-sm font-medium
                                 <?php
                                     if ($r['status'] === 'approved') echo 'text-green-600';
+                                    elseif ($r['status'] === 'expired') echo 'text-gray-600';
                                     elseif ($r['status'] === 'rejected') echo 'text-red-600';
                                     elseif ($r['status'] === 'cancelled') echo 'text-gray-500';
                                     else echo 'text-yellow-600';
                                 ?>">
                                 <?php
-                                    if ($r['status'] === 'approved') echo '✔ Đã được duyệt';
+                                    if ($r['status'] === 'approved') echo '✔ Đang thuê';
+                                    elseif ($r['status'] === 'expired') echo '⌛ Đã hết hạn thuê';
                                     elseif ($r['status'] === 'rejected') echo '✖ Bị từ chối';
                                     elseif ($r['status'] === 'cancelled') echo '🚫 Đã hủy';
                                     else echo '⏳ Đang chờ duyệt';
@@ -132,18 +131,28 @@ unset($req);
                             </span>
                         </div>
 
-<!-- NÚT HÀNH ĐỘNG -->
-<?php if ($r['status'] === 'pending'): ?>
-    <div class="mt-4 text-right">
-        <a href="cancel_rent_request.php?id=<?= $r['id'] ?>"
-           onclick="return confirm('Bạn có chắc chắn muốn hủy đăng ký thuê phòng này không?');"
-           class="inline-flex items-center px-4 py-2 text-sm font-medium
-                  text-red-600 border border-red-600 rounded-md
-                  hover:bg-red-50 transition">
-            Hủy đăng ký
-        </a>
-    </div>
-<?php endif; ?>
+                        <!-- NÚT HÀNH ĐỘNG -->
+                        <div class="mt-4 text-right space-x-2">
+
+                            <?php if ($r['status'] === 'pending'): ?>
+                                <a href="cancel_rent_request.php?id=<?= $r['id'] ?>"
+                                   onclick="return confirm('Bạn có chắc chắn muốn hủy đăng ký thuê phòng này không?');"
+                                   class="inline-flex px-4 py-2 text-sm font-medium
+                                          text-red-600 border border-red-600 rounded-md
+                                          hover:bg-red-50 transition">
+                                    Hủy đăng ký
+                                </a>
+                            <?php endif; ?>
+
+                            <?php if (in_array($r['status'], ['rejected', 'cancelled', 'expired'])): ?>
+                                <a href="/hiihi/delete_rent_request.php?id=<?= $r['id'] ?>"
+                                   onclick="return confirm('Xóa vĩnh viễn đơn này?');"
+                                   class="inline-flex px-4 py-2 text-sm font-medium
+                                          text-gray-600 border border-gray-400 rounded-md
+                                          hover:bg-gray-100 transition">
+                                    Xóa
+                                </a>
+                            <?php endif; ?>
 
                         </div>
 
